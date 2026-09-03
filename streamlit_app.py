@@ -16,6 +16,11 @@ st.set_page_config(
 
 CSV_FILE = "rules.csv"
 GEOSIZES = ["BPO", "SPO", "XPO", "XL", "VB"]
+GEO_OPTIONS = [
+    ",".join(combo)
+    for size in range(1, len(GEOSIZES) + 1)
+    for combo in combinations(GEOSIZES, size)
+]
 
 
 def keep_sscc_digits():
@@ -89,6 +94,14 @@ if not os.path.exists(CSV_FILE):
 # ==================================================
 
 rules_df = pd.read_csv(CSV_FILE)
+rules_df = rules_df.fillna({
+    "Location": "",
+    "GeoSize": "",
+    "Preferencia": 1,
+    "MinSKU": 1,
+    "MaxSKU": 999,
+    "Active": True
+})
 
 if "Priority" in rules_df.columns:
     rules_df = rules_df.rename(columns={"Priority": "Preferencia"})
@@ -96,6 +109,146 @@ if "Priority" in rules_df.columns:
         37 - pd.to_numeric(rules_df["Rule"], errors="coerce")
     )
     rules_df.to_csv(CSV_FILE, index=False)
+
+# ==================================================
+# DIALOGY PRE PRIDANIE A ÚPRAVU PRAVIDLA
+# ==================================================
+
+@st.dialog("Pridať nové pravidlo")
+def add_rule_dialog():
+    with st.form("new_rule_form"):
+        st.subheader("Nové pravidlo")
+
+        location = st.text_input("Location", placeholder="napr. SKLC3-PRJ-TEST-99")
+        geosizes = st.multiselect(
+            "GeoSize",
+            GEOSIZES,
+            help="Zaškrtnite Geosize, ktoré majú byť v pravidle."
+        )
+        min_sku = st.number_input(
+            "MinSKU",
+            min_value=1,
+            value=1,
+            step=1
+        )
+        max_sku = st.number_input(
+            "MaxSKU",
+            min_value=1,
+            value=999,
+            step=1
+        )
+        active = st.checkbox("Aktívna lokácia", value=True)
+
+        submitted = st.form_submit_button("✅ Pridať pravidlo")
+
+        if submitted:
+            if not location.strip():
+                st.warning("Vyplň Location.")
+                return
+
+            if not geosizes:
+                st.warning("Vyber aspoň jeden GeoSize.")
+                return
+
+            next_rule = int(pd.to_numeric(rules_df["Rule"], errors="coerce").max()) + 1
+
+            new_rule = pd.DataFrame([{
+                "Rule": next_rule,
+                "Location": location.strip(),
+                "GeoSize": ",".join(geosizes),
+                "Preferencia": max(1, 37 - next_rule),
+                "MinSKU": int(min_sku),
+                "MaxSKU": int(max_sku),
+                "Active": bool(active)
+            }])
+
+            updated_rules = pd.concat([rules_df, new_rule], ignore_index=True)
+            updated_rules.to_csv(CSV_FILE, index=False)
+            st.success(f"Pravidlo {next_rule} pridané.")
+            st.rerun()
+
+
+@st.dialog("Upraviť pravidlo")
+def edit_rule_dialog():
+    rule_number = st.selectbox(
+        "Vyber pravidlo",
+        options=rules_df["Rule"].tolist(),
+        format_func=lambda value: f"{int(value)} - {rules_df.loc[rules_df['Rule'] == value, 'Location'].iloc[0]}"
+    )
+
+    rule_row = rules_df.loc[rules_df["Rule"] == int(rule_number)].iloc[0]
+    location_value = "" if pd.isna(rule_row["Location"]) else str(rule_row["Location"])
+    geo_value = "" if pd.isna(rule_row["GeoSize"]) else str(rule_row["GeoSize"])
+    selected_default = [
+        item.strip()
+        for item in geo_value.split(",")
+        if item.strip() and item.strip() in GEOSIZES
+    ]
+
+    with st.form(f"edit_rule_form_{rule_number}"):
+        st.subheader(f"Pravidlo {int(rule_number)}")
+
+        location = st.text_input("Location", value=location_value)
+        selected_geos = st.multiselect(
+            "GeoSize",
+            GEOSIZES,
+            default=selected_default,
+            help="Zaškrtnite Geosize, ktoré majú byť v pravidle."
+        )
+        min_sku = st.number_input(
+            "MinSKU",
+            min_value=1,
+            value=int(rule_row["MinSKU"]),
+            step=1
+        )
+        max_sku = st.number_input(
+            "MaxSKU",
+            min_value=1,
+            value=int(rule_row["MaxSKU"]),
+            step=1
+        )
+        active = st.checkbox("Aktívna lokácia", value=bool(rule_row["Active"]))
+
+        submitted = st.form_submit_button("💾 Uložiť zmeny")
+
+        if submitted:
+            if not location.strip():
+                st.warning("Vyplň Location.")
+                return
+
+            if not selected_geos:
+                st.warning("Vyber aspoň jeden GeoSize.")
+                return
+
+            rules_df.loc[rules_df["Rule"] == int(rule_number), "Location"] = location.strip()
+            rules_df.loc[rules_df["Rule"] == int(rule_number), "GeoSize"] = ",".join(selected_geos)
+            rules_df.loc[rules_df["Rule"] == int(rule_number), "MinSKU"] = int(min_sku)
+            rules_df.loc[rules_df["Rule"] == int(rule_number), "MaxSKU"] = int(max_sku)
+            rules_df.loc[rules_df["Rule"] == int(rule_number), "Active"] = bool(active)
+            rules_df.to_csv(CSV_FILE, index=False)
+            st.success(f"Pravidlo {int(rule_number)} upravené.")
+            st.rerun()
+
+
+@st.dialog("Zmazať pravidlo")
+def delete_rule_dialog():
+    global rules_df
+    rule_number = st.selectbox(
+        "Vyber pravidlo",
+        options=rules_df["Rule"].tolist(),
+        format_func=lambda value: f"{int(value)} - {rules_df.loc[rules_df['Rule'] == value, 'Location'].iloc[0]}"
+    )
+
+    with st.form(f"delete_rule_confirm_{rule_number}"):
+        st.warning(f"Naozaj chceš zmazať pravidlo {int(rule_number)}?")
+        confirm = st.form_submit_button("✅ Áno, zmazať")
+
+        if confirm:
+            rules_df = rules_df[rules_df["Rule"] != int(rule_number)].copy()
+            rules_df = rules_df.reset_index(drop=True)
+            rules_df.to_csv(CSV_FILE, index=False)
+            st.success(f"Pravidlo {int(rule_number)} zmazané.")
+            st.rerun()
 
 # ==================================================
 # HLAVIČKA
@@ -118,26 +271,8 @@ with tab1:
 
     st.subheader("Správa pravidiel")
 
-    st.info(
-        "Pridávaj, upravuj alebo maž pravidlá. Zmeny sa použijú okamžite pri testovaní."
-    )
-
-    if st.button("➕ Pridať nové pravidlo"):
-        next_rule = int(pd.to_numeric(rules_df["Rule"]).max()) + 1
-        new_rule = pd.DataFrame([{
-            "Rule": next_rule,
-            "Location": "",
-            "GeoSize": "",
-            "Preferencia": 1,
-            "MinSKU": 1,
-            "MaxSKU": 999,
-            "Active": True
-        }])
-        pd.concat([rules_df, new_rule], ignore_index=True).to_csv(
-            CSV_FILE,
-            index=False
-        )
-        st.rerun()
+    if st.button("✏️ Upraviť"):
+        edit_rule_dialog()
 
     # Reset index so Streamlit editor won't show the technical dataframe index column
     rules_df = rules_df.reset_index(drop=True)
@@ -163,29 +298,22 @@ with tab1:
         }
     )
 
-    col1, col2 = st.columns(2)
+    if st.button("➕ Pridať pravidlo"):
+        add_rule_dialog()
 
-    with col1:
+    if st.button("🗑️ Zmazať"):
+        delete_rule_dialog()
 
-        if st.button("💾 Uložiť pravidlá"):
+    if st.button("💾 Uložiť pravidlá"):
 
-            edited_df.to_csv(
-                CSV_FILE,
-                index=False
-            )
-
-            st.success("Pravidlá uložené.")
-
-            st.rerun()
-
-    with col2:
-
-        st.download_button(
-            "📥 Export CSV",
-            edited_df.to_csv(index=False),
-            file_name="rules.csv",
-            mime="text/csv"
+        edited_df.to_csv(
+            CSV_FILE,
+            index=False
         )
+
+        st.success("Pravidlá uložené.")
+
+        st.rerun()
 
 # ==================================================
 # TEST PALIET
@@ -294,10 +422,27 @@ with tab2:
                 matching_rules
             )
 
+            # Správne triedenie: najprv presná zhoda množiny GeoSize,
+            # potom počet zhodných GeoSize a až potom Preferencia.
+            # Tým sa zabezpečí, že napr. paleta BPO,SPO pôjde na TEST-11,
+            # nie na Rule 6/7 alebo na iné širšie pravidlo.
+            result_df["rule_geo_set"] = result_df["GeoSize"].apply(
+                lambda x: set(item.strip() for item in str(x).split(",") if item.strip())
+            )
+
+            result_df["exact_geo_match"] = result_df["rule_geo_set"].apply(
+                lambda geo_set: geo_set == pallet_geo
+            )
+            result_df["matching_count"] = result_df["rule_geo_set"].apply(
+                lambda geo_set: len(geo_set & pallet_geo)
+            )
+
             result_df = result_df.sort_values(
-                by=["Preferencia", "Rule"],
-                ascending=[False, True]
+                by=["exact_geo_match", "matching_count", "Preferencia", "Rule"],
+                ascending=[False, False, False, True]
             ).reset_index(drop=True)
+
+            result_df = result_df.drop(columns=["rule_geo_set", "exact_geo_match", "matching_count"])
 
             result_df.insert(0, "Poradie", range(1, len(result_df) + 1))
 
