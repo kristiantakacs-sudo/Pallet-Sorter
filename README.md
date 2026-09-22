@@ -1,25 +1,30 @@
-# 🎈 Blank app template
+# Pallet Sorting Manager
 
-A simple Streamlit app template for you to modify!
+Streamlit appka na spravu pravidiel smerovania paliet a testovanie vyslednej lokacie.
 
-[![Open in Streamlit](https://static.streamlit.io/badges/streamlit_badge_black_white.svg)](https://blank-app-template.streamlit.app/)
+## Ukladanie pravidiel
 
-### How to run it on your own machine
+Appka vie bezat v dvoch rezimoch:
 
-Prerequisite: install `uv` if you don't already have it.
+- ked nie je nastavene `DATABASE_URL`, pravidla sa ukladaju lokalne do `rules.csv`;
+- ked je nastavene `DATABASE_URL`, pravidla sa ukladaju do centralnej PostgreSQL databazy a zmeny vidi kazdy pouzivatel online appky.
 
+Pri prvom spusteni s prazdnou databazou sa pravidla inicializuju z `rules.csv`.
+
+## Lokalne spustenie
+
+```bash
+pip install -r requirements.txt
+streamlit run streamlit_app.py
 ```
-$ curl -LsSf https://astral.sh/uv/install.sh | sh
-```
 
-1. Sync the dependencies
+## Nasadenie online
 
-   ```
-   $ uv sync
-   ```
+Najjednoduchsia cesta je Streamlit Community Cloud alebo Render:
 
-2. Run the app
+1. nahraj repozitar na GitHub,
+2. vytvor PostgreSQL databazu, napriklad Neon alebo Render Postgres,
+3. v nastaveniach appky pridaj secret alebo environment variable `DATABASE_URL`,
+4. nastav hlavny subor appky na `streamlit_app.py`.
 
-   ```
-   $ uv run streamlit run streamlit_app.py
-   ```
+Po nasadeni sa pridane, upravene aj zmazane pravidla ukladaju do centralnej databazy.

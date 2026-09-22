@@ -10,11 +10,11 @@ from itertools import combinations
 
 st.set_page_config(
     page_title="Pallet Sorting Manager",
-    page_icon="📦",
     layout="wide"
 )
 
 CSV_FILE = "rules.csv"
+DB_TABLE = "rules"
 GEOSIZES = ["BPO", "SPO", "XPO", "XL", "VB"]
 GEO_OPTIONS = [
     ",".join(combo)
@@ -82,36 +82,122 @@ def create_default_rules():
         "Active"
     ])
 
+
+def get_database_url():
+    if "DATABASE_URL" in os.environ:
+        return os.environ["DATABASE_URL"]
+
+    try:
+        return st.secrets.get("DATABASE_URL")
+    except Exception:
+        return None
+
+
+def normalize_rules(df):
+    df = df.copy()
+
+    if "Priority" in df.columns:
+        df = df.rename(columns={"Priority": "Preferencia"})
+        df["Preferencia"] = 37 - pd.to_numeric(df["Rule"], errors="coerce")
+
+    for column in ["Rule", "Location", "GeoSize", "Preferencia", "MinSKU", "MaxSKU", "Active"]:
+        if column not in df.columns:
+            if column in ["Location", "GeoSize"]:
+                df[column] = ""
+            elif column == "Active":
+                df[column] = True
+            else:
+                df[column] = 1
+
+    df = df[["Rule", "Location", "GeoSize", "Preferencia", "MinSKU", "MaxSKU", "Active"]]
+    df = df.fillna({
+        "Location": "",
+        "GeoSize": "",
+        "Preferencia": 1,
+        "MinSKU": 1,
+        "MaxSKU": 999,
+        "Active": True
+    })
+
+    for column in ["Rule", "Preferencia", "MinSKU", "MaxSKU"]:
+        df[column] = pd.to_numeric(df[column], errors="coerce").fillna(1).astype(int)
+
+    df["Location"] = df["Location"].astype(str)
+    df["GeoSize"] = df["GeoSize"].astype(str)
+    df["Active"] = df["Active"].astype(bool)
+
+    return df
+
+
+@st.cache_resource
+def get_db_engine(database_url):
+    from sqlalchemy import create_engine
+
+    return create_engine(database_url, pool_pre_ping=True)
+
+
+def load_rules_from_csv():
+    if not os.path.exists(CSV_FILE):
+        create_default_rules().to_csv(CSV_FILE, index=False)
+
+    rules = normalize_rules(pd.read_csv(CSV_FILE))
+    rules.to_csv(CSV_FILE, index=False)
+    return rules
+
+
+def save_rules_to_csv(df):
+    normalize_rules(df).to_csv(CSV_FILE, index=False)
+
+
+def load_rules():
+    database_url = get_database_url()
+
+    if not database_url:
+        return load_rules_from_csv()
+
+    engine = get_db_engine(database_url)
+
+    try:
+        rules = pd.read_sql_table(DB_TABLE, engine)
+    except ValueError:
+        rules = load_rules_from_csv()
+        save_rules(rules)
+        return rules
+
+    if rules.empty:
+        rules = load_rules_from_csv()
+        save_rules(rules)
+        return rules
+
+    return normalize_rules(rules)
+
+
+def save_rules(df):
+    rules = normalize_rules(df)
+    database_url = get_database_url()
+
+    if not database_url:
+        save_rules_to_csv(rules)
+        return
+
+    engine = get_db_engine(database_url)
+    rules.to_sql(DB_TABLE, engine, if_exists="replace", index=False)
+
+
 # ==================================================
-# VYTVORENIE CSV PRI PRVOM SPUSTENÍ
+# VYTVORENIE ULOZISKA PRI PRVOM SPUSTENI
 # ==================================================
 
-if not os.path.exists(CSV_FILE):
-    create_default_rules().to_csv(CSV_FILE, index=False)
+rules_df = load_rules()
 
 # ==================================================
-# NAČÍTANIE PRAVIDIEL
+# NACITANIE PRAVIDIEL
 # ==================================================
 
-rules_df = pd.read_csv(CSV_FILE)
-rules_df = rules_df.fillna({
-    "Location": "",
-    "GeoSize": "",
-    "Preferencia": 1,
-    "MinSKU": 1,
-    "MaxSKU": 999,
-    "Active": True
-})
-
-if "Priority" in rules_df.columns:
-    rules_df = rules_df.rename(columns={"Priority": "Preferencia"})
-    rules_df["Preferencia"] = (
-        37 - pd.to_numeric(rules_df["Rule"], errors="coerce")
-    )
-    rules_df.to_csv(CSV_FILE, index=False)
+rules_df = normalize_rules(rules_df)
 
 # ==================================================
-# DIALOGY PRE PRIDANIE A ÚPRAVU PRAVIDLA
+# DIALOGY PRE PRIDANIE A UPRAVU PRAVIDLA
 # ==================================================
 
 @st.dialog("Pridať nové pravidlo")
@@ -139,7 +225,7 @@ def add_rule_dialog():
         )
         active = st.checkbox("Aktívna lokácia", value=True)
 
-        submitted = st.form_submit_button("✅ Pridať pravidlo")
+        submitted = st.form_submit_button("Pridať pravidlo")
 
         if submitted:
             if not location.strip():
@@ -163,7 +249,7 @@ def add_rule_dialog():
             }])
 
             updated_rules = pd.concat([rules_df, new_rule], ignore_index=True)
-            updated_rules.to_csv(CSV_FILE, index=False)
+            save_rules(updated_rules)
             st.success(f"Pravidlo {next_rule} pridané.")
             st.rerun()
 
@@ -209,7 +295,7 @@ def edit_rule_dialog():
         )
         active = st.checkbox("Aktívna lokácia", value=bool(rule_row["Active"]))
 
-        submitted = st.form_submit_button("💾 Uložiť zmeny")
+        submitted = st.form_submit_button("Uložiť zmeny")
 
         if submitted:
             if not location.strip():
@@ -225,7 +311,7 @@ def edit_rule_dialog():
             rules_df.loc[rules_df["Rule"] == int(rule_number), "MinSKU"] = int(min_sku)
             rules_df.loc[rules_df["Rule"] == int(rule_number), "MaxSKU"] = int(max_sku)
             rules_df.loc[rules_df["Rule"] == int(rule_number), "Active"] = bool(active)
-            rules_df.to_csv(CSV_FILE, index=False)
+            save_rules(rules_df)
             st.success(f"Pravidlo {int(rule_number)} upravené.")
             st.rerun()
 
@@ -241,37 +327,37 @@ def delete_rule_dialog():
 
     with st.form(f"delete_rule_confirm_{rule_number}"):
         st.warning(f"Naozaj chceš zmazať pravidlo {int(rule_number)}?")
-        confirm = st.form_submit_button("✅ Áno, zmazať")
+        confirm = st.form_submit_button("Áno, zmazať")
 
         if confirm:
             rules_df = rules_df[rules_df["Rule"] != int(rule_number)].copy()
             rules_df = rules_df.reset_index(drop=True)
-            rules_df.to_csv(CSV_FILE, index=False)
+            save_rules(rules_df)
             st.success(f"Pravidlo {int(rule_number)} zmazané.")
             st.rerun()
 
 # ==================================================
-# HLAVIČKA
+# HLAVICKA
 # ==================================================
 
-st.title("📦 Pallet Sorting Manager")
+st.title("Pallet Sorting Manager")
 
 tab1, tab2 = st.tabs(
     [
-        "⚙️ Správa pravidiel",
-        "🧪 Test palety"
+        "Správa pravidiel",
+        "Test palety"
     ]
 )
 
 # ==================================================
-# SPRÁVA PRAVIDIEL
+# SPRAVA PRAVIDIEL
 # ==================================================
 
 with tab1:
 
     st.subheader("Správa pravidiel")
 
-    if st.button("✏️ Upraviť"):
+    if st.button("Upraviť"):
         edit_rule_dialog()
 
     # Reset index so Streamlit editor won't show the technical dataframe index column
@@ -298,18 +384,15 @@ with tab1:
         }
     )
 
-    if st.button("➕ Pridať pravidlo"):
+    if st.button("Pridať pravidlo"):
         add_rule_dialog()
 
-    if st.button("🗑️ Zmazať"):
+    if st.button("Zmazať"):
         delete_rule_dialog()
 
-    if st.button("💾 Uložiť pravidlá"):
+    if st.button("Uložiť pravidlá"):
 
-        edited_df.to_csv(
-            CSV_FILE,
-            index=False
-        )
+        save_rules(edited_df)
 
         st.success("Pravidlá uložené.")
 
@@ -346,10 +429,10 @@ with tab2:
     col1, col2 = st.columns(2)
 
     with col1:
-        test_btn = st.button("✅ Vyhodnoť")
+        test_btn = st.button("Vyhodnoť")
 
     with col2:
-        reset_btn = st.button("🔄 Reset")
+        reset_btn = st.button("Reset")
 
     if reset_btn:
         st.rerun()
@@ -368,7 +451,7 @@ with tab2:
             st.error("Vyber aspoň jeden GeoSize.")
             st.stop()
 
-        rules_df = pd.read_csv(CSV_FILE)
+        rules_df = load_rules()
 
         pallet_geo = set(selected_geo)
 
@@ -413,7 +496,7 @@ with tab2:
         if len(matching_rules) == 0:
 
             st.error(
-                "❌ Nenašlo sa žiadne pravidlo."
+                "Nenašlo sa žiadne pravidlo."
             )
 
         else:
